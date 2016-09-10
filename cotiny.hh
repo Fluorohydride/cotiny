@@ -95,18 +95,11 @@ namespace cotiny
         bool finished = false;
     };
 
-    #else //
+#else // WINDOWS FIBER
 
-    #if __has_attribute(naked)
-    #define NAKED_SUPPORTED
+#define DISABLE_INLINE __attribute__((noinline))
 
-    #define DECLEAR_NAKED_ATTR __attribute__((naked))
-
-    #else
-    #define DECLEAR_NAKED_ATTR
-    #endif // __has_attribute
-
-    #if defined(__i386__) || defined(_WIN32)
+#if defined(__i386__) || defined(_WIN32)
 
     // important registers only
     struct cpu_context {
@@ -123,16 +116,15 @@ namespace cotiny
 
     class coroutine_util {
     private:
-        DECLEAR_NAKED_ATTR
-        static int32_t save_cpu_status(cpu_context*) {
+        DISABLE_INLINE
+        static int32_t save_cpu_status(cpu_context* ctx) {
+            // generally compiler will add prologue and epilogue for non-naked function
+            // sometimes the prologue can be optimized so we have to check %rbp and %rsp
             __asm__(
-                // compiler will add prologue and epilogue for non-naked function
-                // so we have to restore %ebp and %esp after prologue
-                // "pushq %ebp"
-                // "movq %esp, %ebp"
-        #ifndef NAKED_SUPPORTED
-                "popl %ebp;"    // prologue hack, should be removed if naked attribute is supported
-        #endif
+                "cmpl %esp, %ebp\n"
+                "jnz save_cpu32\n"
+                "popl %ebp\n" 
+                "save_cpu32:\n"
                 "movl 4(%esp), %eax;"    // first param -> %eax
                 "movl $1, (%eax);"
                 "movl %ebx, 4(%eax);"
@@ -149,19 +141,18 @@ namespace cotiny
                 "movl $0, %eax;"
                 "ret;"
             );
-        #ifndef NAKED_SUPPORTED
-            return 0;   // useless, just avoid warning
-        #endif
+            // used to prevent ctx being optimized out
+            return (int32_t)(reinterpret_cast<uintptr_t>(ctx) & 0xabcd);
         }
         
-        DECLEAR_NAKED_ATTR
-        static int32_t restore_cpu_status(const cpu_context*) {
+        DISABLE_INLINE
+        static int32_t restore_cpu_status(const cpu_context* ctx) {
             __asm__(
-            #ifndef NAKED_SUPPORTED
-                "movl 8(%esp), %eax;"   // first param -> %eax
-            #else
-                "movl 4(%esp), %eax;"
-            #endif
+                "cmpl %esp, %ebp\n"
+                "jnz restore_cpu32\n"
+                "popl %ebp\n" 
+                "restore_cpu32:\n"
+                "movl 4(%esp), %eax;"   // first param -> %eax
                 "movl 4(%eax), %ebx;"
                 "movl 8(%eax), %ecx;"
                 "movl 12(%eax), %edx;"
@@ -173,9 +164,8 @@ namespace cotiny
                 "movl (%eax), %eax;"
                 "ret;"
             );
-        #ifndef NAKED_SUPPORTED
-            return 0;   // useless, just avoid warning
-        #endif
+            // used to prevent ctx being optimized out
+            return (int32_t)(reinterpret_cast<uintptr_t>(ctx) & 0xabcd);
         }
         
     public:
@@ -203,7 +193,8 @@ namespace cotiny
         }
     };
 
-    #else
+#else // X86-64
+
     // important registers only
     struct cpu_context {
         long rdi;
@@ -227,72 +218,68 @@ namespace cotiny
 
     class coroutine_util {
     private:
-        DECLEAR_NAKED_ATTR
-        static int32_t save_cpu_status(cpu_context*) {
-            __asm__(
-                // compiler will add prologue and epilogue for non-naked function
-                // so we have to restore %rbp and %rsp after prologue
-                // "pushq %rbp"
-                // "movq %rsp, %rbp"
-        #ifndef NAKED_SUPPORTED
-                "popq %rbp;"    // prologue hack, should be removed if naked attribute is supported
-        #endif
-                "movq %rdi, (%rdi);"
-                "movq %rsi, 8(%rdi);"
-                "movq $1, 16(%rdi);"
-                "movq %rbx, 24(%rdi);"
-                "movq %rcx, 32(%rdi);"
-                "movq %rdx, 40(%rdi);"
-                "movq %r8, 48(%rdi);"
-                "movq %r9, 56(%rdi);"
-                "movq %r10, 64(%rdi);"
-                "movq %r11, 72(%rdi);"
-                "movq %r12, 80(%rdi);"
-                "movq %r13, 88(%rdi);"
-                "movq %r14, 96(%rdi);"
-                "movq %r15, 104(%rdi);"
-                "movq %rbp, 120(%rdi);"
-                "movq (%rsp), %rax;"    // %rip
-                "movq %rax, 112(%rdi);"
-                "leaq 8(%rsp), %rax;"   // %rsp
-                "movq %rax, 128(%rdi);"
-                "movq $0, %rax;"
-                "ret;"
+        DISABLE_INLINE
+        static int32_t save_cpu_status(cpu_context* ctx) {
+            // generally compiler will add prologue and epilogue for non-naked function
+            // sometimes the prologue can be optimized so we have to check %rbp and %rsp
+            asm(
+                "cmpq %rsp, %rbp\n"
+                "jnz save_cpu64\n"
+                "popq %rbp\n" 
+                "save_cpu64:\n"
+                "movq %rdi, (%rdi)\n"
+                "movq %rsi, 8(%rdi)\n"
+                "movq $1, 16(%rdi)\n"
+                "movq %rbx, 24(%rdi)\n"
+                "movq %rcx, 32(%rdi)\n"
+                "movq %rdx, 40(%rdi)\n"
+                "movq %r8, 48(%rdi)\n"
+                "movq %r9, 56(%rdi)\n"
+                "movq %r10, 64(%rdi)\n"
+                "movq %r11, 72(%rdi)\n"
+                "movq %r12, 80(%rdi)\n"
+                "movq %r13, 88(%rdi)\n"
+                "movq %r14, 96(%rdi)\n"
+                "movq %r15, 104(%rdi)\n"
+                "movq %rbp, 120(%rdi)\n"
+                "movq (%rsp), %rax\n"    // %rip
+                "movq %rax, 112(%rdi)\n"
+                "leaq 8(%rsp), %rax\n"   // %rsp
+                "movq %rax, 128(%rdi)\n"
+                "movq $0, %rax\n"
+                "ret\n"
             );
-        #ifndef NAKED_SUPPORTED
-            return 0;   // useless, just avoid warning
-        #endif
+            // used to prevent ctx being optimized out
+            return (int32_t)(reinterpret_cast<uintptr_t>(ctx) & 0xabcd);
         }
         
-        DECLEAR_NAKED_ATTR
-        static int32_t restore_cpu_status(const cpu_context*) {
+        DISABLE_INLINE
+        static int32_t restore_cpu_status(const cpu_context* ctx) {
             __asm__(
-                "movq 8(%rdi), %rsi;"
-                "movq 16(%rdi), %rax;"
-                "movq 24(%rdi), %rbx;"
-                "movq 32(%rdi), %rcx;"
-                "movq 40(%rdi), %rdx;"
-                "movq 48(%rdi), %r8;"
-                "movq 56(%rdi), %r9;"
-                "movq 64(%rdi), %r10;"
-                "movq 72(%rdi), %r11;"
-                "movq 80(%rdi), %r12;"
-                "movq 88(%rdi), %r13;"
-                "movq 96(%rdi), %r14;"
-                "movq 104(%rdi), %r15;"
-                "movq 120(%rdi), %rbp;"
-                "movq 128(%rdi), %rsp;"
-                "pushq 112(%rdi);"
-                "movq (%rdi), %rdi;"
-                "ret;"
+                "movq 8(%rdi), %rsi\n"
+                "movq 16(%rdi), %rax\n"
+                "movq 24(%rdi), %rbx\n"
+                "movq 32(%rdi), %rcx\n"
+                "movq 40(%rdi), %rdx\n"
+                "movq 48(%rdi), %r8\n"
+                "movq 56(%rdi), %r9\n"
+                "movq 64(%rdi), %r10\n"
+                "movq 72(%rdi), %r11\n"
+                "movq 80(%rdi), %r12\n"
+                "movq 88(%rdi), %r13\n"
+                "movq 96(%rdi), %r14\n"
+                "movq 104(%rdi), %r15\n"
+                "movq 120(%rdi), %rbp\n"
+                "movq 128(%rdi), %rsp\n"
+                "pushq 112(%rdi)\n"
+                "movq (%rdi), %rdi\n"
+                "ret\n"
             );
-        #ifndef NAKED_SUPPORTED
-            return 0;   // useless, just avoid warning
-        #endif
+            // used to prevent ctx being optimized out
+            return (int32_t)(reinterpret_cast<uintptr_t>(ctx) & 0xabcd);
         }
         
     public:
-        
         static uint8_t* init_stack(uint8_t* stack_pointer, size_t stack_size) {
             uintptr_t sp = reinterpret_cast<uintptr_t>(stack_pointer + stack_size);
             // make stack pointer 16bytes-align (OSX)
@@ -317,7 +304,7 @@ namespace cotiny
         }
     };
 
-    #endif // i386
+#endif // i386/x64
 
     template<typename YIELD_TYPE = int32_t, typename RESUME_TYPE = int32_t>
     class Coroutine {
